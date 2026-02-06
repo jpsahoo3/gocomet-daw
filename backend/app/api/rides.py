@@ -7,15 +7,16 @@ from sqlalchemy.orm import Session
 from app.core.schemas import RideCreateRequest
 from app.core.idempotency import check_idempotency, save_idempotency
 from app.core.request_context import get_request_context
-from app.services.matching_service import find_nearest_driver
+from app.services.matching_service import find_nearest_driver, get_redis
 from app.websocket.ws import manager
+import logging
 
 from app.db.deps import get_db
 from app.models.ride import Ride
 
 router = APIRouter()
 
-OFFER_TTL_SECONDS = 15
+OFFER_TTL_SECONDS = 60
 
 
 @router.post("/v1/rides")
@@ -52,6 +53,20 @@ def create_ride(
     else:
         ride.status = "OFFERED"
         db.commit()
+
+        r = get_redis()
+        key = f"ride:offer:{str(ride_id)}"
+        r.setex(key, OFFER_TTL_SECONDS, driver)
+        logger = logging.getLogger(__name__)
+        try:
+            logger.info("Set ride offer: %s -> %s", key, driver)
+        except Exception:
+            pass
+        # fallback print to ensure visibility in simple development setups
+        try:
+            print(f"Set ride offer: {key} -> {driver}")
+        except Exception:
+            pass
 
         response = {
             "ride_id": str(ride_id),

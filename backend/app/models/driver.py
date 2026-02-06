@@ -1,7 +1,5 @@
 from sqlalchemy import Column, String, Boolean
-from sqlalchemy.ext.declarative import declarative_base
-
-Base = declarative_base()
+from app.db.base import Base
 
 class Driver(Base):
     __tablename__ = "drivers"

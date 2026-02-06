@@ -25,7 +25,7 @@ def _lock_driver(region: str, tenant: str, driver_id: str) -> bool:
 def find_nearest_driver(region: str, tenant: str, lat: float, lon: float, exclude=None):
     exclude = exclude or set()
 
-    nearby = r.georadius(_key(region, tenant, GEO_KEY), lon, lat, 5, unit="km")
+    nearby = r.georadius(GEO_KEY, lon, lat, 5, unit="km")
 
     for driver_id in nearby:
         if driver_id in exclude:

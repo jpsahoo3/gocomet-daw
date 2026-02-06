@@ -4,7 +4,7 @@ from app.models.ride import Ride
 from app.services.matching_service import find_nearest_driver, get_redis
 
 
-OFFER_TTL = 15
+OFFER_TTL = 60
 
 
 def retry_dispatch(db: Session, ride_id: str):

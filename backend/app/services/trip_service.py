@@ -43,7 +43,8 @@ def start_trip(db: Session, ride_id: str) -> Trip:
 
     ride.status = "ONGOING"
 
-    trip = Trip(ride_id=ride.id, status="ONGOING")
+    # Ensure tenant is set on Trip (rides carry tenant context)
+    trip = Trip(ride_id=ride.id, status="ONGOING", tenant_id=ride.tenant_id)
 
     db.add(trip)
     db.commit()

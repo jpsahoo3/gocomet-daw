@@ -34,6 +34,7 @@ def create_payment_for_ride(db: Session, ride_id: str) -> Payment:
     amount = trip.fare
 
     payment = Payment(
+        tenant_id=trip.tenant_id,
         ride_id=trip.ride_id,
         amount=amount,
         status="PENDING",

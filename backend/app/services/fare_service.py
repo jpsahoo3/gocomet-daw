@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.services.surge_service import get_surge_multiplier
 
@@ -17,6 +17,17 @@ def calculate_fare(
     """
     Realistic fare computation.
     """
+
+    # Normalize datetimes: make both timezone-aware in UTC if needed
+    if start_time.tzinfo is None:
+        start_time = start_time.replace(tzinfo=timezone.utc)
+    else:
+        start_time = start_time.astimezone(timezone.utc)
+
+    if end_time.tzinfo is None:
+        end_time = end_time.replace(tzinfo=timezone.utc)
+    else:
+        end_time = end_time.astimezone(timezone.utc)
 
     duration_min = (end_time - start_time).total_seconds() / 60
 

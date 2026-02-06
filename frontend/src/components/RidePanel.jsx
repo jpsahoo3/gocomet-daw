@@ -1,50 +1,44 @@
 import { useState } from "react";
-import { createRide, endTrip } from "../services/api";
+import { createRide } from "../services/api";
 
-export default function RidePanel({ onEvent }) {
+export default function RidePanel({ onEvent, onRideCreated }) {
   const [lat, setLat] = useState("12.9716");
   const [lon, setLon] = useState("77.5946");
-  const [activeRide, setActiveRide] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState(null);
 
   async function handleCreateRide() {
-    const res = await createRide(lat, lon);
-    onEvent(`Ride status: ${res.status}`);
+    setLoading(true);
+    try {
+      const res = await createRide(lat, lon);
+      setStatus(res.status);
+      onEvent(`Ride created: ${res.status}`);
 
-    if (res.status === "ASSIGNED") {
-      setActiveRide(res);
+      if (res.status === "OFFERED" || res.status === "ASSIGNED") {
+        onRideCreated(res);
+      }
+    } catch (err) {
+      setStatus("ERROR");
+      onEvent(`Ride creation failed: ${err.message}`);
+    } finally {
+      setLoading(false);
     }
-  }
-
-  async function handleEndTrip() {
-    if (!activeRide) return;
-
-    await endTrip(activeRide.ride_id, activeRide.driver_id);
-    onEvent(`Trip ${activeRide.ride_id} completed`);
-    setActiveRide(null);
   }
 
   return (
     <div className="card">
-      <h3>🚕 Ride</h3>
+      <h3>🚕 Ride Request</h3>
 
-      <input value={lat} onChange={e => setLat(e.target.value)} />
-      <input value={lon} onChange={e => setLon(e.target.value)} />
+      <input placeholder="Latitude" value={lat} onChange={e => setLat(e.target.value)} />
+      <input placeholder="Longitude" value={lon} onChange={e => setLon(e.target.value)} />
 
-      <button onClick={handleCreateRide}>Create Ride</button>
+      <button onClick={handleCreateRide} disabled={loading}>
+        {loading ? "Creating..." : "Create Ride"}
+      </button>
 
-      {activeRide && (
-        <>
-          <p><strong>Ride ID:</strong> {activeRide.ride_id}</p>
-          <p><strong>Driver:</strong> {activeRide.driver_id}</p>
-
-          <button
-            style={{ background: "#dc2626" }}
-            onClick={handleEndTrip}
-          >
-            End Trip
-          </button>
-        </>
-      )}
+      {status && <p style={{ color: status === "ERROR" ? "#dc2626" : "#2563eb" }}>
+        Status: {status}
+      </p>}
     </div>
   );
 }

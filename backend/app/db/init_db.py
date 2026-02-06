@@ -5,6 +5,7 @@ from app.db.session import engine
 from app.models.ride import Ride  # noqa
 from app.models.trip import Trip  # noqa
 from app.models.payment import Payment  # noqa
+from app.models.driver import Driver  # noqa
 
 
 def init_db():

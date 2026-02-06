@@ -6,6 +6,7 @@ from app.models.ride import Ride
 from app.services.matching_service import get_redis
 from app.services.dispatch_service import retry_dispatch
 from app.websocket.ws import manager
+import logging
 
 router = APIRouter()
 
@@ -19,7 +20,19 @@ def accept_ride(driver_id: str, ride_id: str, background_tasks: BackgroundTasks)
     db = get_db()
     r = get_redis()
 
-    offered_driver = r.get(f"ride:offer:{ride_id}")
+    key = f"ride:offer:{ride_id}"
+    offered_driver = r.get(key)
+    logger = logging.getLogger(__name__)
+    try:
+        keys = r.keys("ride:offer:*")
+        logger.info("Checking offer key=%s value=%s all_offer_keys=%s", key, offered_driver, keys)
+    except Exception:
+        pass
+    # fallback print to ensure visibility
+    try:
+        print(f"Checking offer key={key} value={offered_driver} all_offer_keys={r.keys('ride:offer:*')}")
+    except Exception:
+        pass
 
     if not offered_driver or offered_driver != driver_id:
         raise HTTPException(status_code=404, detail="Offer expired or invalid")
