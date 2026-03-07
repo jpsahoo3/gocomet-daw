@@ -1,4 +1,5 @@
-from datetime import datetime
+import logging
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.models.ride import Ride
@@ -6,6 +7,8 @@ from app.models.trip import Trip
 from app.services.matching_service import get_redis
 from app.services.fare_service import calculate_fare
 from app.services.surge_service import update_surge
+
+logger = logging.getLogger(__name__)
 
 
 CELL = "default"  # simplified geo bucket
@@ -36,25 +39,27 @@ def start_trip(db: Session, ride_id: str) -> Trip:
     ride = db.query(Ride).filter(Ride.id == ride_id).first()
 
     if not ride:
+        logger.error("start_trip: ride not found | ride_id=%s", ride_id)
         raise ValueError("Ride not found")
 
     if ride.status != "ASSIGNED":
+        logger.warning(
+            "start_trip: invalid status transition | ride_id=%s current_status=%s",
+            ride_id, ride.status,
+        )
         raise ValueError("Trip can start only when ASSIGNED")
 
     ride.status = "ONGOING"
-
-    # Ensure tenant is set on Trip (rides carry tenant context)
     trip = Trip(ride_id=ride.id, status="ONGOING", tenant_id=ride.tenant_id)
-
     db.add(trip)
     db.commit()
     db.refresh(trip)
 
-    # ---- Update demand metrics ----
     r = get_redis()
     _inc_active_rides(r)
     _dec_available_drivers(r)
 
+    logger.info("Trip started | ride_id=%s trip_id=%s driver=%s", ride_id, trip.id, ride.driver_id)
     return trip
 
 
@@ -91,9 +96,14 @@ def end_trip(db: Session, ride_id: str):
     ride = db.query(Ride).filter(Ride.id == ride_id).first()
 
     if not ride:
+        logger.error("end_trip: ride not found | ride_id=%s", ride_id)
         raise ValueError("Ride not found")
 
     if ride.status != "ONGOING":
+        logger.warning(
+            "end_trip: invalid status transition | ride_id=%s current_status=%s",
+            ride_id, ride.status,
+        )
         raise ValueError("Trip can end only when ONGOING")
 
     trip = db.query(Trip).filter(Trip.ride_id == ride_id).first()
@@ -101,7 +111,7 @@ def end_trip(db: Session, ride_id: str):
     # ---- Mock distance ----
     distance_km = 5.0
 
-    end_time = datetime.utcnow()
+    end_time = datetime.now(timezone.utc)
 
     # ---- Real fare engine ----
     fare = calculate_fare(
@@ -129,4 +139,8 @@ def end_trip(db: Session, ride_id: str):
 
     db.commit()
 
+    logger.info(
+        "Trip ended | ride_id=%s driver=%s distance_km=%.1f fare=%.2f",
+        ride_id, ride.driver_id, distance_km, fare,
+    )
     return trip

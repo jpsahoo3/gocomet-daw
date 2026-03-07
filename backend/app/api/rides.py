@@ -1,3 +1,4 @@
+import logging
 import uuid
 import json
 
@@ -9,10 +10,10 @@ from app.core.idempotency import check_idempotency, save_idempotency
 from app.core.request_context import get_request_context
 from app.services.matching_service import find_nearest_driver, get_redis
 from app.websocket.ws import manager
-import logging
-
 from app.db.deps import get_db
 from app.models.ride import Ride
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -30,9 +31,15 @@ def create_ride(
     tenant = ctx["tenant_id"]
     region = ctx["region"]
 
+    logger.info(
+        "Ride request received | tenant=%s region=%s lat=%.4f lon=%.4f idempotency_key=%s",
+        tenant, region, req.pickup_lat, req.pickup_lon, idempotency_key,
+    )
+
     if idempotency_key:
         cached = check_idempotency(idempotency_key)
         if cached:
+            logger.info("Idempotency hit | key=%s", idempotency_key)
             return json.loads(cached)
 
     ride_id = uuid.uuid4()
@@ -42,13 +49,20 @@ def create_ride(
         tenant_id=tenant,
         rider_id="rider-1",
         status="REQUESTED",
+        pickup_lat=req.pickup_lat,
+        pickup_lon=req.pickup_lon,
     )
     db.add(ride)
     db.commit()
+    logger.debug("Ride persisted | ride_id=%s status=REQUESTED", ride_id)
 
     driver = find_nearest_driver(region, tenant, req.pickup_lat, req.pickup_lon)
 
     if not driver:
+        logger.warning(
+            "No driver found | ride_id=%s lat=%.4f lon=%.4f",
+            ride_id, req.pickup_lat, req.pickup_lon,
+        )
         response = {"ride_id": str(ride_id), "status": "NO_DRIVER"}
     else:
         ride.status = "OFFERED"
@@ -57,16 +71,11 @@ def create_ride(
         r = get_redis()
         key = f"ride:offer:{str(ride_id)}"
         r.setex(key, OFFER_TTL_SECONDS, driver)
-        logger = logging.getLogger(__name__)
-        try:
-            logger.info("Set ride offer: %s -> %s", key, driver)
-        except Exception:
-            pass
-        # fallback print to ensure visibility in simple development setups
-        try:
-            print(f"Set ride offer: {key} -> {driver}")
-        except Exception:
-            pass
+
+        logger.info(
+            "Ride offered | ride_id=%s driver=%s ttl=%ds",
+            ride_id, driver, OFFER_TTL_SECONDS,
+        )
 
         response = {
             "ride_id": str(ride_id),
@@ -76,7 +85,7 @@ def create_ride(
 
         background_tasks.add_task(
             manager.broadcast,
-            f"[{tenant}/{region}] Ride {ride_id} offered to driver {driver}",
+            f"[{tenant}/{region}] Ride {ride_id} offered to {driver}",
         )
 
     if idempotency_key:

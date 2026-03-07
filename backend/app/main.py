@@ -8,10 +8,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import rides, drivers, trips
 from app.api.driver_actions import router as driver_actions_router
 from app.api.payments import router as payments_router
+from app.core.logging_config import setup_logging
 from app.db.init_db import init_db
 from app.websocket.ws import websocket_endpoint
 
 load_dotenv()
+setup_logging()
 
 
 # ---------- Lifespan handler (modern FastAPI startup) ----------

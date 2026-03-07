@@ -1,5 +1,9 @@
 import asyncio
+import logging
+
 from fastapi import WebSocket, WebSocketDisconnect
+
+logger = logging.getLogger(__name__)
 
 
 class ConnectionManager:
@@ -9,23 +13,37 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
+        logger.info(
+            "WebSocket connected | total_connections=%d client=%s",
+            len(self.active_connections),
+            websocket.client,
+        )
 
     def disconnect(self, websocket: WebSocket):
         try:
             self.active_connections.remove(websocket)
+            logger.info(
+                "WebSocket disconnected | total_connections=%d client=%s",
+                len(self.active_connections),
+                websocket.client,
+            )
         except ValueError:
             pass
 
     async def broadcast(self, message: str):
-        # send to all active connections, ignore send errors per connection
+        dead = []
         for connection in list(self.active_connections):
             try:
                 await connection.send_text(message)
-            except Exception:
-                try:
-                    self.disconnect(connection)
-                except Exception:
-                    pass
+            except Exception as exc:
+                logger.warning("Broadcast send failed, removing connection | error=%s", exc)
+                dead.append(connection)
+
+        for conn in dead:
+            self.disconnect(conn)
+
+        if self.active_connections:
+            logger.debug("Broadcast sent | msg=%.80s connections=%d", message, len(self.active_connections))
 
 
 manager = ConnectionManager()
@@ -34,13 +52,10 @@ manager = ConnectionManager()
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
-        # keep connection alive; try to receive with short timeout so
-        # broadcast tasks can run concurrently and disconnects are detected
         while True:
             try:
                 await asyncio.wait_for(websocket.receive_text(), timeout=0.5)
             except asyncio.TimeoutError:
-                # timeout is expected; continue loop to keep alive
                 continue
     except WebSocketDisconnect:
         manager.disconnect(websocket)

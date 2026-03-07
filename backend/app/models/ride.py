@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, DateTime
+from sqlalchemy import Column, Float, String, DateTime
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 
@@ -16,5 +16,9 @@ class Ride(Base):
     rider_id = Column(String, nullable=False)
     status = Column(String, nullable=False)
     driver_id = Column(String, nullable=True)
+
+    # Pickup coordinates stored so re-dispatch uses the actual pickup point
+    pickup_lat = Column(Float, nullable=True)
+    pickup_lon = Column(Float, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())

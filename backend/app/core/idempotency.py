@@ -1,11 +1,4 @@
-import redis
-import os
-
-def get_redis():
-    url = os.getenv("REDIS_URL")
-    if not url:
-        raise RuntimeError("REDIS_URL not set")
-    return redis.Redis.from_url(url)
+from app.core.redis_client import get_redis
 
 def check_idempotency(key):
     r = get_redis()

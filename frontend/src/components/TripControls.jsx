@@ -1,93 +1,285 @@
-import { useState } from "react";
-import { acceptRide, startTrip, endTrip } from "../services/tripApi";
+import { useState, useEffect, useRef } from "react";
+import { acceptRide, declineRide, startTrip, endTrip } from "../services/tripApi";
 import { payForRide } from "../services/paymentApi";
 
+const TRIP_STEPS = ["OFFERED", "ACCEPTED", "ONGOING", "COMPLETED", "PAID"];
+const OFFER_TTL_SECONDS = 60;
+
+function getStepIndex(status) {
+  const idx = TRIP_STEPS.indexOf(status);
+  return idx === -1 ? 0 : idx;
+}
+
+function StepProgress({ status }) {
+  const current = getStepIndex(status);
+  return (
+    <div className="step-progress">
+      {TRIP_STEPS.map((step, i) => {
+        const state = i < current ? "done" : i === current ? "active" : "pending";
+        return (
+          <div key={step} style={{ display: "flex", alignItems: "center", flex: 1 }}>
+            <div className="step" style={{ flex: "none", alignItems: "center" }}>
+              <div className={`step-circle ${state}`}>
+                {state === "done" ? "✓" : i + 1}
+              </div>
+              <span className={`step-label ${state}`}>{step}</span>
+            </div>
+            {i < TRIP_STEPS.length - 1 && (
+              <div className={`step-line ${i < current ? "filled" : ""}`} style={{ flex: 1 }} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function OfferCountdown({ onExpire }) {
+  const [remaining, setRemaining] = useState(OFFER_TTL_SECONDS);
+  const timerRef = useRef(null);
+
+  useEffect(() => {
+    timerRef.current = setInterval(() => {
+      setRemaining((r) => {
+        if (r <= 1) {
+          clearInterval(timerRef.current);
+          onExpire();
+          return 0;
+        }
+        return r - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timerRef.current);
+  }, [onExpire]);
+
+  const pct = (remaining / OFFER_TTL_SECONDS) * 100;
+  const urgent = remaining <= 15;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: urgent ? "var(--danger)" : "var(--text-muted)" }}>
+        <span>Offer expires in</span>
+        <strong style={{ fontFamily: "monospace" }}>{remaining}s</strong>
+      </div>
+      <div style={{ height: 4, borderRadius: 99, background: "rgba(255,255,255,0.08)", overflow: "hidden" }}>
+        <div style={{
+          height: "100%",
+          width: `${pct}%`,
+          borderRadius: 99,
+          background: urgent ? "var(--danger)" : "linear-gradient(90deg, var(--accent), var(--accent-2))",
+          transition: "width 1s linear, background 0.3s",
+        }} />
+      </div>
+    </div>
+  );
+}
+
+function RideCard({ ride, onTripEnd, onEvent, onRemove }) {
+  const [status, setStatus] = useState(ride.status || "OFFERED");
+  const [driverId, setDriverId] = useState(ride.driver_id || "driver-1");
+  const [fare, setFare] = useState(null);
+  const [loading, setLoading] = useState(null);
+  const [offerExpired, setOfferExpired] = useState(false);
+
+  const isOffered = status === "OFFERED" && !offerExpired;
+
+  async function withLoading(key, fn) {
+    setLoading(key);
+    try {
+      await fn();
+    } catch (err) {
+      onEvent?.(`Error (${key}): ${err.message || err}`);
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  const handleAccept = () => withLoading("accept", async () => {
+    await acceptRide(ride.ride_id, driverId);
+    setStatus("ACCEPTED");
+    onEvent?.(`Ride ${ride.ride_id.slice(0, 8)} accepted by ${driverId}`);
+  });
+
+  const handleDecline = () => withLoading("decline", async () => {
+    const res = await declineRide(ride.ride_id, driverId);
+
+    if (res.status === "NO_DRIVER") {
+      onEvent?.(`No drivers available for ride ${ride.ride_id.slice(0, 8)} — removing`);
+      setTimeout(() => onRemove(ride.ride_id), 1500);
+      setStatus("NO_DRIVER");
+      return;
+    }
+
+    if (res.status === "REOFFERED" && res.driver_id) {
+      setDriverId(res.driver_id);
+      setOfferExpired(false);
+      setStatus("OFFERED");
+      onEvent?.(`Ride ${ride.ride_id.slice(0, 8)} re-offered to ${res.driver_id}`);
+    }
+  });
+
+  const handleStart = () => withLoading("start", async () => {
+    await startTrip(ride.ride_id);
+    setStatus("ONGOING");
+    onEvent?.(`Trip started: ${ride.ride_id.slice(0, 8)}`);
+  });
+
+  const handleEnd = () => withLoading("end", async () => {
+    const res = await endTrip(ride.ride_id);
+    setFare(res.fare);
+    setStatus("COMPLETED");
+    onEvent?.(`Trip ended: ${ride.ride_id.slice(0, 8)} — Fare ₹${res.fare}`);
+  });
+
+  const handlePay = () => withLoading("pay", async () => {
+    const res = await payForRide(ride.ride_id, fare);
+    setStatus("PAID");
+    onEvent?.(`Payment ${res.status} for ride ${ride.ride_id.slice(0, 8)} — ₹${res.amount}`);
+    setTimeout(() => onRemove(ride.ride_id), 1200);
+  });
+
+  const handleExpired = () => {
+    setOfferExpired(true);
+    onEvent?.(`Offer expired for ride ${ride.ride_id.slice(0, 8)}`);
+  };
+
+  const displayStatus = offerExpired && status === "OFFERED" ? "EXPIRED" : status;
+
+  return (
+    <div className="ride-card">
+      <div className="ride-card-header">
+        <span className="ride-id">{ride.ride_id?.slice(0, 12)}…</span>
+        <span className={`status-badge ${displayStatus === "EXPIRED" ? "ERROR" : displayStatus}`}>
+          {displayStatus}
+        </span>
+      </div>
+
+      <div className="info-row">
+        <span>Driver</span>
+        <strong>{driverId}</strong>
+      </div>
+
+      {isOffered && (
+        <OfferCountdown onExpire={handleExpired} />
+      )}
+
+      {offerExpired && status === "OFFERED" && (
+        <div style={{ fontSize: 12, color: "var(--danger)", textAlign: "center", padding: "6px 0" }}>
+          Offer expired — driver did not respond in time
+        </div>
+      )}
+
+      {!offerExpired && status !== "OFFERED" && (
+        <StepProgress status={status} />
+      )}
+
+      {fare && (
+        <div className="fare-display">
+          <span>Fare</span>
+          <strong>₹{fare}</strong>
+        </div>
+      )}
+
+      <div className="ride-actions">
+        {/* Accept — available only when offer is live */}
+        <button
+          className="btn-action accept"
+          onClick={handleAccept}
+          disabled={!isOffered || loading !== null}
+          title={offerExpired ? "Offer has expired" : "Accept this ride"}
+        >
+          {loading === "accept" ? "…" : "Accept"}
+        </button>
+
+        {/* Decline — available only when offer is live */}
+        <button
+          className="btn-action end"
+          onClick={handleDecline}
+          disabled={!isOffered || loading !== null}
+          title="Decline and re-dispatch to another driver"
+        >
+          {loading === "decline" ? "…" : "Decline"}
+        </button>
+
+        {/* Start — only after accepted */}
+        <button
+          className="btn-action start"
+          onClick={handleStart}
+          disabled={status !== "ACCEPTED" || loading !== null}
+        >
+          {loading === "start" ? "…" : "Start"}
+        </button>
+
+        {/* End Trip — only when ongoing */}
+        <button
+          className="btn-action end"
+          onClick={handleEnd}
+          disabled={status !== "ONGOING" || loading !== null}
+        >
+          {loading === "end" ? "…" : "End"}
+        </button>
+
+        {/* Pay — only after completion */}
+        <button
+          className="btn-action pay"
+          onClick={handlePay}
+          disabled={status !== "COMPLETED" || !fare || loading !== null}
+        >
+          {loading === "pay" ? "…" : "Pay"}
+        </button>
+
+        {/* Dismiss — for expired or no-driver state */}
+        {(offerExpired || status === "NO_DRIVER") && (
+          <button
+            className="btn-action accept"
+            style={{ borderColor: "rgba(100,116,139,0.4)", color: "var(--text-muted)" }}
+            onClick={() => onRemove(ride.ride_id)}
+          >
+            Dismiss
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function TripControls({ activeRides = [], onTripEnd, onEvent }) {
-  const [fares, setFares] = useState({});
-  const [statuses, setStatuses] = useState({});
-
-  const handleAccept = async (ride) => {
-    const driverId = ride.driver_id || "driver-1";
-    try {
-      await acceptRide(ride.ride_id, driverId);
-      setStatuses(s => ({ ...s, [ride.ride_id]: "ACCEPTED" }));
-    } catch (err) {
-      console.error("Accept failed:", err);
-      onEvent?.(`Accept failed: ${err.message || err}`);
-    }
-  };
-
-  const handleStart = async (ride) => {
-    try {
-      await startTrip(ride.ride_id);
-      setStatuses(s => ({ ...s, [ride.ride_id]: "ONGOING" }));
-    } catch (err) {
-      console.error("Start trip failed:", err);
-      onEvent?.(`Start trip failed: ${err.message || err}`);
-    }
-  };
-
-  const handleEnd = async (ride) => {
-    try {
-      const res = await endTrip(ride.ride_id);
-      setFares(f => ({ ...f, [ride.ride_id]: res.fare }));
-      setStatuses(s => ({ ...s, [ride.ride_id]: "COMPLETED" }));
-    } catch (err) {
-      console.error("End trip failed:", err);
-      onEvent?.(`End trip failed: ${err.message || err}`);
-    }
-  };
-
-  const handlePay = async (ride) => {
-    try {
-      const res = await payForRide(ride.ride_id, fares[ride.ride_id]);
-      onEvent?.(`Payment ${res.status} for ride ${ride.ride_id}, amount=${res.amount}`);
-      onTripEnd(ride.ride_id);
-      setStatuses(s => { const ns = { ...s }; delete ns[ride.ride_id]; return ns; });
-      setFares(f => { const nf = { ...f }; delete nf[ride.ride_id]; return nf; });
-    } catch (err) {
-      console.error("Payment failed:", err);
-      onEvent?.(`Payment failed: ${err.message || err}`);
-    }
-  };
-
   if (!activeRides.length) {
     return (
       <div className="card">
-        <h3>🚦 Trip Controls</h3>
-        <p style={{ color: "#888" }}>Waiting for ride offer...</p>
+        <div className="card-header">
+          <div className="card-icon amber">🚦</div>
+          <h3 className="card-title">Trip Controls</h3>
+        </div>
+        <div className="empty-state">
+          <div className="empty-state-icon">🛣</div>
+          <p className="empty-state-text">No active rides yet.<br />Request a ride to get started.</p>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="card">
-      <h3>🚦 Trip Controls</h3>
-      {activeRides.map(ride => (
-        <div key={ride.ride_id} style={{ marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid #eee' }}>
-          <p><strong>Ride ID:</strong> {ride.ride_id}</p>
-          <p><strong>Driver:</strong> {ride.driver_id}</p>
-          <p><strong>Status:</strong> {statuses[ride.ride_id] || ride.status}</p>
+      <div className="card-header">
+        <div className="card-icon amber">🚦</div>
+        <h3 className="card-title">Trip Controls</h3>
+        <span style={{ marginLeft: "auto", fontSize: 12, color: "var(--text-muted)" }}>
+          {activeRides.length} active
+        </span>
+      </div>
 
-          <button onClick={() => handleAccept(ride)} disabled={statuses[ride.ride_id] !== undefined}>
-            Accept Ride
-          </button>
-
-          <button onClick={() => handleStart(ride)} disabled={statuses[ride.ride_id] !== "ACCEPTED"} style={{ marginLeft: 8 }}>
-            Start Trip
-          </button>
-
-          <button onClick={() => handleEnd(ride)} disabled={statuses[ride.ride_id] !== "ONGOING"} style={{ marginLeft: 8 }}>
-            End Trip
-          </button>
-
-          <button onClick={() => handlePay(ride)} disabled={!fares[ride.ride_id]} style={{ marginLeft: 8 }}>
-            Pay
-          </button>
-
-          {fares[ride.ride_id] && <p>Fare: ₹{fares[ride.ride_id]}</p>}
-        </div>
-      ))}
+      <div style={{ display: "flex", flexDirection: "column", gap: 12, maxHeight: 480, overflowY: "auto", paddingRight: 2 }}>
+        {activeRides.map((ride) => (
+          <RideCard
+            key={ride.ride_id}
+            ride={ride}
+            onTripEnd={onTripEnd}
+            onEvent={onEvent}
+            onRemove={onTripEnd}
+          />
+        ))}
+      </div>
     </div>
   );
 }
