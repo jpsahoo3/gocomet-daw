@@ -1,11 +1,18 @@
 """
-Centralised Redis client with an in-memory fallback.
+Centralised Redis client with an in-memory fallback and auto-reconnect.
 
-When Redis is reachable the real redis.Redis client is returned.
-When Redis is not running (ConnectionError / ResponseError) a thread-safe
-FallbackRedis object that mirrors the subset of commands used in this project
-is returned instead.  Data is kept only in process memory and is lost on
-restart, but all API endpoints continue to work without Redis.
+Startup behaviour:
+  - If Redis is reachable (Docker running) the real redis.Redis client is used.
+  - If Redis is unavailable a thread-safe FallbackRedis is used instead;
+    all endpoints continue to function with in-process data.
+
+Auto-reconnect:
+  - While on FallbackRedis, every REDIS_RETRY_INTERVAL seconds (default 30)
+    get_redis() will probe real Redis.  When Docker starts and Redis becomes
+    reachable, the singleton is transparently swapped to the real client.
+  - In-flight data already in FallbackRedis (e.g. active offers) stays there
+    until it expires naturally; new data is written to real Redis from that
+    point on.  This is the correct trade-off for a dev environment.
 """
 
 import fnmatch
@@ -15,16 +22,21 @@ import os
 import time
 from threading import Lock
 
-logger = logging.getLogger(__name__)
-
 import redis as redis_lib
 
+logger = logging.getLogger(__name__)
+
+# How long to wait between reconnect probes when on FallbackRedis (seconds)
+REDIS_RETRY_INTERVAL: int = int(os.getenv("REDIS_RETRY_INTERVAL", "30"))
+
 _client = None
+_fallback_instance: "FallbackRedis | None" = None   # keep reference for probe logic
+_last_retry_at: float = 0.0
 _client_lock = Lock()
 
 
 # ---------------------------------------------------------------------------
-# In-memory fallback
+# Haversine helper (used by FallbackRedis.georadius)
 # ---------------------------------------------------------------------------
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -36,8 +48,12 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2.0 * R * math.asin(math.sqrt(a))
 
 
+# ---------------------------------------------------------------------------
+# In-memory fallback
+# ---------------------------------------------------------------------------
+
 class FallbackRedis:
-    """Thread-safe in-memory substitute for the Redis commands used here."""
+    """Thread-safe in-memory substitute for the Redis commands used in this project."""
 
     def __init__(self):
         self._strings: dict = {}   # key -> (value, expire_at|None)
@@ -49,7 +65,7 @@ class FallbackRedis:
     # ---- helpers -----------------------------------------------------------
 
     def _str_alive(self, key: str):
-        """Return stored value if key exists and is not expired, else None."""
+        """Return stored value if the key exists and hasn't expired, else None."""
         item = self._strings.get(key)
         if item is None:
             return None
@@ -68,7 +84,7 @@ class FallbackRedis:
     def set(self, key: str, value, nx: bool = False, ex=None):
         with self._lock:
             if nx and self._str_alive(key) is not None:
-                return None          # key exists, NX prevents overwrite
+                return None
             exp = time.time() + ex if ex else None
             self._strings[key] = (value, exp)
             return True
@@ -87,7 +103,10 @@ class FallbackRedis:
 
     def keys(self, pattern: str = "*"):
         with self._lock:
-            all_keys = set(self._strings) | set(self._sets) | set(self._geo) | set(self._hashes)
+            all_keys = (
+                set(self._strings) | set(self._sets) |
+                set(self._geo) | set(self._hashes)
+            )
             return [k for k in all_keys if fnmatch.fnmatch(k, pattern)]
 
     # ---- set commands ------------------------------------------------------
@@ -117,7 +136,11 @@ class FallbackRedis:
             results = []
             for member, (m_lon, m_lat) in geo.items():
                 dist_km = _haversine_km(lat, lon, m_lat, m_lon)
-                dist = {"km": dist_km, "m": dist_km * 1000, "mi": dist_km * 0.621371}.get(unit, dist_km)
+                dist = {
+                    "km": dist_km,
+                    "m":  dist_km * 1000,
+                    "mi": dist_km * 0.621371,
+                }.get(unit, dist_km)
                 if dist <= radius:
                     results.append(member)
             return results
@@ -155,37 +178,90 @@ class FallbackRedis:
 
 
 # ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _try_connect_redis(url: str):
+    """
+    Attempt to connect to real Redis.  Returns the client on success, None on failure.
+    Connection and socket timeouts are tight (1 s / 2 s) so probes are non-blocking.
+    """
+    try:
+        candidate = redis_lib.Redis.from_url(
+            url,
+            decode_responses=True,
+            socket_connect_timeout=1,
+            socket_timeout=2,
+        )
+        candidate.ping()
+        return candidate
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Public factory
 # ---------------------------------------------------------------------------
 
 def get_redis():
-    """Return a live Redis client or a FallbackRedis if Redis is unreachable."""
-    global _client
-    if _client is not None:
+    """
+    Return the active Redis client (real or in-memory fallback).
+
+    - First call: tries real Redis; falls back to FallbackRedis if unavailable.
+    - Subsequent calls while on FallbackRedis: probes real Redis every
+      REDIS_RETRY_INTERVAL seconds.  When Docker starts and Redis becomes
+      reachable the singleton is transparently promoted to real Redis.
+    """
+    global _client, _fallback_instance, _last_retry_at
+
+    # Fast path: real Redis is already active
+    if _client is not None and not isinstance(_client, FallbackRedis):
         return _client
 
     with _client_lock:
-        if _client is not None:
+        url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+        # ── First call ──────────────────────────────────────────────────────
+        if _client is None:
+            real = _try_connect_redis(url)
+            if real:
+                _client = real
+                logger.info("Connected to Redis | url=%s", url)
+            else:
+                _fallback_instance = FallbackRedis()
+                _client = _fallback_instance
+                _last_retry_at = time.monotonic()
+                logger.warning(
+                    "Redis unavailable — using in-memory fallback "
+                    "(retry every %ds). Start Docker to enable persistence.",
+                    REDIS_RETRY_INTERVAL,
+                )
             return _client
 
-        url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-        try:
-            candidate = redis_lib.Redis.from_url(
-                url,
-                decode_responses=True,
-                socket_connect_timeout=1,
-                socket_timeout=2,
-            )
-            candidate.ping()
-            _client = candidate
-            logger.info("Connected to Redis | url=%s", url)
-        except Exception:
-            logger.warning(
-                "Redis is unavailable — using in-memory fallback. "
-                "Data will not persist across restarts. "
-                "Start Redis on localhost:6379 for full persistence."
-            )
-            _client = FallbackRedis()
-            logger.info("FallbackRedis (in-memory) initialised")
+        # ── Periodic reconnect probe (only while on FallbackRedis) ──────────
+        if isinstance(_client, FallbackRedis):
+            now = time.monotonic()
+            if now - _last_retry_at >= REDIS_RETRY_INTERVAL:
+                _last_retry_at = now
+                logger.debug("Probing Redis for reconnect | url=%s", url)
+                real = _try_connect_redis(url)
+                if real:
+                    _client = real
+                    logger.info(
+                        "Redis reconnected — switched from FallbackRedis | url=%s",
+                        url,
+                    )
 
         return _client
+
+
+def reset_client_for_testing():
+    """
+    Force the singleton to be re-initialised on the next get_redis() call.
+    Only intended for use in unit tests.
+    """
+    global _client, _fallback_instance, _last_retry_at
+    with _client_lock:
+        _client = None
+        _fallback_instance = None
+        _last_retry_at = 0.0
