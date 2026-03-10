@@ -39,6 +39,19 @@ export const declineRide = async (rideId, driverId) => {
   return res.json();
 };
 
+export const cancelRide = async (rideId, reason) => {
+  const params = reason ? `?reason=${encodeURIComponent(reason)}` : "";
+  const res = await fetch(`${BASE}/v1/rides/${rideId}/cancel${params}`, {
+    method: "POST",
+    headers,
+  });
+  if (!res.ok) {
+    const detail = await parseError(res, "Cancel ride failed");
+    throw new Error(detail);
+  }
+  return res.json();
+};
+
 export const startTrip = async (rideId) => {
   const res = await fetch(`${BASE}/v1/trips/${rideId}/start`, {
     method: "POST",

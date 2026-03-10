@@ -6,6 +6,7 @@ logger = logging.getLogger(__name__)
 
 GEO_KEY = "drivers:geo"
 DRIVER_LOCK_PREFIX = "driver:lock:"
+DRIVER_STATUS_PREFIX = "driver:status:"   # value: "offline" means unavailable
 SEARCH_RADIUS_KM = 5
 
 
@@ -18,8 +19,15 @@ def _lock_driver(region: str, tenant: str, driver_id: str) -> bool:
     return acquired
 
 
+def _is_driver_online(driver_id: str) -> bool:
+    """Return True unless the driver has explicitly gone offline."""
+    r = get_redis()
+    status = r.get(f"{DRIVER_STATUS_PREFIX}{driver_id}")
+    return status != "offline"
+
+
 def find_nearest_driver(region: str, tenant: str, lat: float, lon: float, exclude=None):
-    """Return the closest available unlocked driver within SEARCH_RADIUS_KM."""
+    """Return the closest available, online, unlocked driver within SEARCH_RADIUS_KM."""
     exclude = exclude or set()
     r = get_redis()
 
@@ -32,6 +40,9 @@ def find_nearest_driver(region: str, tenant: str, lat: float, lon: float, exclud
     for driver_id in nearby:
         if driver_id in exclude:
             logger.debug("Skipping excluded driver | driver=%s", driver_id)
+            continue
+        if not _is_driver_online(driver_id):
+            logger.debug("Skipping offline driver | driver=%s", driver_id)
             continue
         if _lock_driver(region, tenant, driver_id):
             logger.info("Driver matched | driver=%s lat=%.4f lon=%.4f", driver_id, lat, lon)
@@ -67,6 +78,8 @@ def find_nearest_driver_for_redispatch(
 
     for driver_id in all_drivers:
         if driver_id in exclude:
+            continue
+        if not _is_driver_online(driver_id):
             continue
         if _lock_driver(region, tenant, driver_id):
             logger.info("Re-dispatch wide-search matched | driver=%s", driver_id)

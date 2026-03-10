@@ -22,6 +22,13 @@ def _apply_migrations():
     migrations = [
         "ALTER TABLE rides ADD COLUMN IF NOT EXISTS pickup_lat FLOAT",
         "ALTER TABLE rides ADD COLUMN IF NOT EXISTS pickup_lon FLOAT",
+        # v2 — drop coords, estimated fare, cancellation
+        "ALTER TABLE rides ADD COLUMN IF NOT EXISTS drop_lat FLOAT",
+        "ALTER TABLE rides ADD COLUMN IF NOT EXISTS drop_lon FLOAT",
+        "ALTER TABLE rides ADD COLUMN IF NOT EXISTS estimated_fare FLOAT",
+        "ALTER TABLE rides ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ",
+        "ALTER TABLE rides ADD COLUMN IF NOT EXISTS cancellation_fee FLOAT",
+        "ALTER TABLE rides ADD COLUMN IF NOT EXISTS cancellation_reason VARCHAR",
     ]
     with engine.connect() as conn:
         for sql in migrations:

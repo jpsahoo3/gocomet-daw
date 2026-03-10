@@ -1,4 +1,5 @@
 import logging
+import math
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
@@ -12,6 +13,16 @@ logger = logging.getLogger(__name__)
 
 
 CELL = "default"  # simplified geo bucket
+
+DEFAULT_DISTANCE_KM = 5.0   # fallback when drop coords are not stored
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    R = 6371.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi, dlambda = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return round(2.0 * R * math.asin(math.sqrt(a)), 2)
 
 
 def _inc_active_rides(r):
@@ -108,8 +119,22 @@ def end_trip(db: Session, ride_id: str):
 
     trip = db.query(Trip).filter(Trip.ride_id == ride_id).first()
 
-    # ---- Mock distance ----
-    distance_km = 5.0
+    # ---- Actual distance: use stored pickup→drop coords when available ----
+    if (
+        ride.pickup_lat is not None and ride.pickup_lon is not None
+        and ride.drop_lat is not None and ride.drop_lon is not None
+    ):
+        distance_km = _haversine_km(
+            ride.pickup_lat, ride.pickup_lon, ride.drop_lat, ride.drop_lon
+        )
+        logger.debug(
+            "Actual distance | ride_id=%s pickup=(%.4f,%.4f) drop=(%.4f,%.4f) km=%.2f",
+            ride_id, ride.pickup_lat, ride.pickup_lon,
+            ride.drop_lat, ride.drop_lon, distance_km,
+        )
+    else:
+        distance_km = DEFAULT_DISTANCE_KM
+        logger.debug("Fallback distance used | ride_id=%s km=%.1f", ride_id, distance_km)
 
     end_time = datetime.now(timezone.utc)
 

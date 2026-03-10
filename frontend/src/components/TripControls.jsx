@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { acceptRide, declineRide, startTrip, endTrip } from "../services/tripApi";
+import { acceptRide, declineRide, cancelRide, startTrip, endTrip } from "../services/tripApi";
 import { payForRide } from "../services/paymentApi";
 
 const TRIP_STEPS = ["OFFERED", "ACCEPTED", "ONGOING", "COMPLETED", "PAID"];
@@ -143,6 +143,16 @@ function RideCard({ ride, onTripEnd, onEvent, onRemove }) {
     onEvent?.(`Offer expired for ride ${ride.ride_id.slice(0, 8)}`);
   };
 
+  const handleCancel = () => withLoading("cancel", async () => {
+    const res = await cancelRide(ride.ride_id);
+    setStatus("CANCELLED");
+    onEvent?.(
+      `Ride ${ride.ride_id.slice(0, 8)} cancelled` +
+      (res.cancellation_fee > 0 ? ` — fee ₹${res.cancellation_fee}` : "")
+    );
+    setTimeout(() => onRemove(ride.ride_id), 1500);
+  });
+
   const displayStatus = offerExpired && status === "OFFERED" ? "EXPIRED" : status;
 
   return (
@@ -158,6 +168,14 @@ function RideCard({ ride, onTripEnd, onEvent, onRemove }) {
         <span>Driver</span>
         <strong>{driverId}</strong>
       </div>
+
+      {/* Estimated fare from booking (shown before actual fare is known) */}
+      {ride.estimated_fare && !fare && (
+        <div className="info-row" style={{ opacity: 0.75 }}>
+          <span>Est. Fare</span>
+          <span style={{ color: "var(--accent)" }}>₹{ride.estimated_fare}</span>
+        </div>
+      )}
 
       {isOffered && (
         <OfferCountdown onExpire={handleExpired} />
@@ -227,6 +245,23 @@ function RideCard({ ride, onTripEnd, onEvent, onRemove }) {
         >
           {loading === "pay" ? "…" : "Pay"}
         </button>
+
+        {/* Cancel — available before trip starts (OFFERED or ASSIGNED) */}
+        {["OFFERED", "ACCEPTED"].includes(status) && !offerExpired && (
+          <button
+            className="btn-action"
+            style={{
+              borderColor: "rgba(239,68,68,0.35)",
+              color: "#f87171",
+              background: "rgba(239,68,68,0.06)",
+            }}
+            onClick={handleCancel}
+            disabled={loading !== null}
+            title={status === "ACCEPTED" ? "Cancel (₹50 fee applies)" : "Cancel for free"}
+          >
+            {loading === "cancel" ? "…" : status === "ACCEPTED" ? "Cancel (₹50)" : "Cancel"}
+          </button>
+        )}
 
         {/* Dismiss — for expired or no-driver state */}
         {(offerExpired || status === "NO_DRIVER") && (
